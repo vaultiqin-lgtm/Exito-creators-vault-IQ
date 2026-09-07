@@ -1,0 +1,6 @@
+{
+  "name": "Vault IQ",
+  "description": "Secure Indian-based financial dashboard with AI salary splitter, goal tracker, reminders, bill scanner, and smart repayment suggestions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
