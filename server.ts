@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import authRoutes from "./server/routes/authRoutes.js";
@@ -9,7 +8,19 @@ import { startReportScheduler, generateAndSendReport, getUserDoc } from "./serve
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+
+// Enable CORS for universal compatibility (Vercel previews, local dev, custom domains)
+app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  if (req.method === "OPTIONS") {
+    res.sendStatus(200);
+    return;
+  }
+  next();
+});
 
 // Increase payload size limit for base64 image uploads
 app.use(express.json({ limit: "50mb" }));
@@ -777,8 +788,14 @@ app.post("/api/notifications/test-email", async (req: express.Request, res: expr
 // VITE DEV SERVER / PRODUCTION SERVING
 // ==========================================
 
+// Simple Health & Status Check Endpoint
+app.get("/api/health", (req: express.Request, res: express.Response) => {
+  res.json({ status: "ok", service: "Vault IQ API", timestamp: new Date().toISOString() });
+});
+
 async function start() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -792,13 +809,23 @@ async function start() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(Number(PORT), "0.0.0.0", () => {
     console.log(`Vault IQ server running on http://localhost:${PORT}`);
     // Start automated background report scheduler
-    startReportScheduler();
+    try {
+      startReportScheduler();
+    } catch (schedErr) {
+      console.warn("Scheduler initialization notice:", schedErr);
+    }
   });
 }
 
-start().catch((err) => {
-  console.error("Failed to start server:", err);
-});
+// Only start standalone HTTP server when executed directly (not inside Vercel serverless)
+if (!process.env.VERCEL) {
+  start().catch((err) => {
+    console.error("Failed to start server:", err);
+  });
+}
+
+export { app };
+export default app;
