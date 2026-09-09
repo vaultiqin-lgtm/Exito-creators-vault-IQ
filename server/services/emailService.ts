@@ -7,22 +7,21 @@ import nodemailer from "nodemailer";
 
 // Initialize Nodemailer transporter with connection settings
 const createTransporter = () => {
-  const gmailUser = process.env.GMAIL_USER;
-  const gmailPass = process.env.GMAIL_APP_PASSWORD;
+  const gmailUser = process.env.GMAIL_USER || process.env.SMTP_USER || "vaultiq.in@gmail.com";
+  const gmailPass = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS;
 
-  const smtpHost = process.env.SMTP_HOST || "smtp.gmail.com";
-  const smtpPort = Number(process.env.SMTP_PORT) || 587;
-  const smtpUser = process.env.SMTP_USER || gmailUser;
-  const smtpPass = process.env.SMTP_PASS || gmailPass;
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = Number(process.env.SMTP_PORT) || 465;
 
-  if (smtpUser && smtpPass) {
+  // If a custom non-Gmail SMTP host is explicitly specified
+  if (smtpHost && smtpHost !== "smtp.gmail.com" && smtpHost.trim() !== "") {
     return nodemailer.createTransport({
       host: smtpHost,
       port: smtpPort,
-      secure: smtpPort === 465, // true for 465, false for other ports
+      secure: smtpPort === 465,
       auth: {
-        user: smtpUser,
-        pass: smtpPass,
+        user: gmailUser,
+        pass: gmailPass,
       },
       tls: {
         rejectUnauthorized: false,
@@ -30,12 +29,12 @@ const createTransporter = () => {
     });
   }
 
-  // Return direct transport fallback or null if unconfigured
+  // Pre-configured Gmail service with SSL (port 465) - optimal for Vercel/serverless environments
   return nodemailer.createTransport({
     service: "gmail",
     auth: {
-      user: gmailUser || "vaultiq.verify@gmail.com",
-      pass: gmailPass || "unconfigured",
+      user: gmailUser,
+      pass: gmailPass,
     },
   });
 };
