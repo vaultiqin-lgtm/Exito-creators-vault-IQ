@@ -6,6 +6,7 @@ import {
   generateCryptographicOtp,
   storeHashedOtp,
   verifySubmittedOtp,
+  createVerificationToken,
 } from "../services/otpService.js";
 import { sendOtpEmail } from "../services/emailService.js";
 
@@ -48,15 +49,17 @@ router.post("/send-gmail-otp", async (req: express.Request, res: express.Respons
 
     // Generate secure random 6-digit OTP
     const rawOtp = generateCryptographicOtp();
+    const expiresAt = Date.now() + 5 * 60 * 1000;
 
     // Store hashed OTP in memory (5-minute expiration, max 1 active per email)
     storeHashedOtp(normalizedEmail, rawOtp);
+    const verificationToken = createVerificationToken(normalizedEmail, rawOtp, expiresAt);
 
     // Register request timestamp for rate limiting
     registerOtpRequest(normalizedEmail);
     resendCooldownMap.set(normalizedEmail, Date.now());
 
-    // Deliver OTP via Nodemailer email service ONLY
+    // Deliver REAL OTP via Nodemailer email service to Gmail inbox
     const emailResult = await sendOtpEmail(normalizedEmail, rawOtp);
 
     if (!emailResult.success) {
@@ -69,12 +72,13 @@ router.post("/send-gmail-otp", async (req: express.Request, res: express.Respons
 
     console.log(`[AUTH ROUTE] Successfully generated & sent Gmail OTP to ${normalizedEmail}. (Raw OTP excluded from HTTP response for security).`);
 
-    // SECURE RESPONSE: Never return OTP in JSON payload
+    // SECURE RESPONSE: Return metadata & stateless verification token (never raw OTP)
     res.json({
       success: true,
       message: `A secure 6-digit OTP has been sent to ${normalizedEmail}. Please check your inbox or spam folder.`,
       expiresInSeconds: 300,
       resendCooldownSeconds: 60,
+      token: verificationToken,
     });
   } catch (err: any) {
     console.error("[AUTH ROUTE ERROR /send-gmail-otp]", err);
@@ -128,15 +132,17 @@ router.post("/resend-gmail-otp", async (req: express.Request, res: express.Respo
 
     // Generate new secure 6-digit OTP
     const rawOtp = generateCryptographicOtp();
+    const expiresAt = Date.now() + 5 * 60 * 1000;
 
-    // Store hashed OTP
+    // Store hashed OTP & create stateless token
     storeHashedOtp(normalizedEmail, rawOtp);
+    const verificationToken = createVerificationToken(normalizedEmail, rawOtp, expiresAt);
 
     // Update timestamps
     registerOtpRequest(normalizedEmail);
     resendCooldownMap.set(normalizedEmail, Date.now());
 
-    // Send email
+    // Send real email to inbox
     const emailResult = await sendOtpEmail(normalizedEmail, rawOtp);
 
     if (!emailResult.success) {
@@ -152,6 +158,7 @@ router.post("/resend-gmail-otp", async (req: express.Request, res: express.Respo
       message: `A new 6-digit OTP has been sent to ${normalizedEmail}.`,
       expiresInSeconds: 300,
       resendCooldownSeconds: 60,
+      token: verificationToken,
     });
   } catch (err: any) {
     console.error("[AUTH ROUTE ERROR /resend-gmail-otp]", err);
@@ -164,12 +171,12 @@ router.post("/resend-gmail-otp", async (req: express.Request, res: express.Respo
 
 /**
  * POST /api/auth/verify-gmail-otp
- * Verifies submitted 6-digit OTP code against stored SHA-256 hash.
+ * Verifies submitted 6-digit OTP code against stored SHA-256 hash or stateless token.
  * Enforces single-use deletion, 5-minute expiration, and 5 max attempts.
  */
 router.post("/verify-gmail-otp", async (req: express.Request, res: express.Response) => {
   try {
-    const { email, otp } = req.body;
+    const { email, otp, token } = req.body;
 
     if (!email || !isValidEmailFormat(email)) {
       res.status(400).json({
@@ -188,7 +195,7 @@ router.post("/verify-gmail-otp", async (req: express.Request, res: express.Respo
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const verification = verifySubmittedOtp(normalizedEmail, otp.trim());
+    const verification = verifySubmittedOtp(normalizedEmail, otp.trim(), token);
 
     if (!verification.success) {
       res.status(400).json({

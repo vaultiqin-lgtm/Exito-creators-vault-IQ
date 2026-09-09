@@ -3,11 +3,14 @@
  * Handles API calls to backend Express routes for sending, resending, and verifying Gmail OTPs.
  */
 
+let currentVerificationToken = "";
+
 export interface ApiResponse<T = any> {
   success: boolean;
   message?: string;
   error?: string;
   data?: T;
+  token?: string;
   resendCooldownSeconds?: number;
   expiresInSeconds?: number;
   remainingAttempts?: number;
@@ -25,6 +28,9 @@ export const requestGmailOtp = async (email: string): Promise<ApiResponse> => {
     });
 
     const data = await response.json();
+    if (data.token) {
+      currentVerificationToken = data.token;
+    }
     return data;
   } catch (err: any) {
     console.error("[AUTH SERVICE API ERROR]", err);
@@ -47,6 +53,9 @@ export const resendGmailOtp = async (email: string): Promise<ApiResponse> => {
     });
 
     const data = await response.json();
+    if (data.token) {
+      currentVerificationToken = data.token;
+    }
     return data;
   } catch (err: any) {
     console.error("[AUTH SERVICE API ERROR]", err);
@@ -58,14 +67,14 @@ export const resendGmailOtp = async (email: string): Promise<ApiResponse> => {
 };
 
 /**
- * Verify 6-digit OTP code against backend SHA-256 stored hash.
+ * Verify 6-digit OTP code against backend SHA-256 stored hash or stateless token.
  */
-export const verifyGmailOtp = async (email: string, otp: string): Promise<ApiResponse> => {
+export const verifyGmailOtp = async (email: string, otp: string, token?: string): Promise<ApiResponse> => {
   try {
     const response = await fetch("/api/auth/verify-gmail-otp", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, otp }),
+      body: JSON.stringify({ email, otp, token: token || currentVerificationToken }),
     });
 
     const data = await response.json();

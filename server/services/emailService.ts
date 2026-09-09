@@ -46,8 +46,20 @@ export const sendOtpEmail = async (
   email: string,
   otp: string
 ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
-  const gmailUser = process.env.GMAIL_USER || process.env.SMTP_USER || "vaultiq.verify@gmail.com";
-  const gmailPass = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS;
+  const rawUser = process.env.GMAIL_USER || process.env.SMTP_USER || "vaultiq.in@gmail.com";
+  const rawPass = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS || "";
+
+  const gmailUser = rawUser.trim();
+  const gmailPass = rawPass.replace(/\s+/g, "").trim();
+
+  // Validate that Gmail credentials are provided
+  if (!gmailPass) {
+    console.error(`[GMAIL OTP SERVICE ERROR] GMAIL_APP_PASSWORD is not set in environment variables.`);
+    return {
+      success: false,
+      error: "GMAIL_APP_PASSWORD is missing in Vercel Environment Variables. Please add GMAIL_APP_PASSWORD in Vercel Project Settings > Environment Variables.",
+    };
+  }
 
   const htmlTemplate = `
     <!DOCTYPE html>
@@ -104,21 +116,6 @@ export const sendOtpEmail = async (
   try {
     const transporter = createTransporter();
 
-    // Check if SMTP password is set
-    if (!gmailPass && !process.env.SMTP_PASS) {
-      console.warn(`\n======================================================`);
-      console.warn(`[GMAIL OTP SERVICE WARNING] GMAIL_APP_PASSWORD is not set in .env.`);
-      console.warn(`To send REAL emails to inbox, please provide GMAIL_APP_PASSWORD in .env.`);
-      console.warn(`[DEVELOPMENT BACKEND LOG] Generated Gmail OTP for ${email}: ${otp}`);
-      console.warn(`======================================================\n`);
-
-      // Return success in local environment so dev flow works without crashing
-      return {
-        success: true,
-        messageId: `dev_mock_${Date.now()}`,
-      };
-    }
-
     const info = await transporter.sendMail({
       from: `"Vault IQ Security" <${gmailUser}>`,
       to: email,
@@ -136,12 +133,9 @@ export const sendOtpEmail = async (
   } catch (error: any) {
     console.error(`[GMAIL OTP EMAIL ERROR] Failed to send email to ${email}:`, error);
 
-    // Fallback log for development context
-    console.warn(`[DEVELOPMENT BACKEND LOG] Fallback OTP generated for ${email}: ${otp}`);
-
     return {
       success: false,
-      error: error?.message || "Failed to deliver email via Nodemailer SMTP service.",
+      error: error?.message || "Failed to deliver OTP to your Gmail inbox. Please check Gmail credentials.",
     };
   }
 };

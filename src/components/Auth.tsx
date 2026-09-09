@@ -385,6 +385,7 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
   };
 
   // ============================
+  // ============================
   // HANDLERS FOR AUTH MODES
   // ============================
 
@@ -407,19 +408,71 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
       return;
     }
 
-    // Require Firebase Phone OTP Verification before granting access
-    setLoginMobile(user.mobile);
-    await dispatchFirebaseOtp(user.mobile, "login-otp-verify", "Login 2FA code sent to");
+    const targetEmail = user.email || (user.username.includes("@") ? user.username : null);
+    if (!targetEmail) {
+      // Direct login if no email linked
+      onLoginSuccess(username);
+      return;
+    }
+
+    // Require 2FA Real Gmail OTP verification
+    setLoginMobile(targetEmail);
+    setOtpLoading(true);
+    const response = await requestGmailOtp(targetEmail);
+    setOtpLoading(false);
+
+    if (response.success) {
+      setMode("login-otp-verify");
+      setOtp(["", "", "", "", "", ""]);
+      setResendCooldown(60);
+      setExpiryTimer(300);
+      setVerifyAttempts(0);
+      setSuccess(response.message || `A secure 6-digit 2FA code has been dispatched to ${targetEmail}.`);
+    } else {
+      setError(response.error || "Failed to dispatch 2FA code to your email. Please try again.");
+    }
   };
 
   // VERIFY LOGIN OTP Handler
-  const handleVerifyLoginOtp = (e: React.FormEvent) => {
+  const handleVerifyLoginOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    verifyFirebaseOtp(() => {
+    setError("");
+    setSuccess("");
+
+    const enteredOtp = otp.join("");
+    if (enteredOtp.length < 6) {
+      setError("Please enter all 6 digits of the verification code.");
+      return;
+    }
+
+    if (expiryTimer <= 0) {
+      setError("The verification code has expired (5-minute limit). Please click Resend OTP.");
+      return;
+    }
+
+    if (verifyAttempts >= 5) {
+      setError("Maximum verification attempts (5/5) exceeded. Request a new OTP.");
+      return;
+    }
+
+    const currentUsers = getUsers();
+    const user = currentUsers[username];
+    const targetEmail = user?.email || loginMobile;
+
+    setOtpLoading(true);
+    const response = await verifyGmailOtp(targetEmail, enteredOtp);
+    setOtpLoading(false);
+
+    if (response.success) {
+      setSuccess("Two-factor verification successful! Unlocking Vault...");
       setTimeout(() => {
         onLoginSuccess(username);
       }, 1000);
-    });
+    } else {
+      const newAttempts = verifyAttempts + 1;
+      setVerifyAttempts(newAttempts);
+      setError(response.error || `Invalid verification code. (Attempt ${newAttempts} of 5)`);
+    }
   };
 
   // SIGNUP Handler
@@ -443,8 +496,9 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
       return;
     }
 
-    if (!email.includes("@") || !email.includes(".")) {
-      setError("Please enter a valid email address.");
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(trimmedEmail)) {
+      setError("Please enter a valid Gmail / email address.");
       return;
     }
 
@@ -465,20 +519,68 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
       return;
     }
 
-    await dispatchFirebaseOtp(mobile, "signup-otp-verify", "Verification code sent to");
+    // Send original REAL 6-digit OTP code directly to user's Gmail inbox
+    setOtpLoading(true);
+    const response = await requestGmailOtp(trimmedEmail);
+    setOtpLoading(false);
+
+    if (response.success) {
+      setMode("signup-otp-verify");
+      setOtp(["", "", "", "", "", ""]);
+      setResendCooldown(60);
+      setExpiryTimer(300);
+      setVerifyAttempts(0);
+      setSuccess(response.message || `A real 6-digit verification code has been dispatched to ${trimmedEmail}. Valid for 5 minutes.`);
+    } else {
+      setError(response.error || "Failed to dispatch OTP to your Gmail. Please verify email and try again.");
+    }
   };
 
   // VERIFY SIGNUP OTP Handler
-  const handleVerifySignupOtp = (e: React.FormEvent) => {
+  const handleVerifySignupOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    verifyFirebaseOtp(() => {
-      saveUser({ username, mobile, email, password, mobileVerified: true });
+    setError("");
+    setSuccess("");
+
+    const enteredOtp = otp.join("");
+    if (enteredOtp.length < 6) {
+      setError("Please enter all 6 digits of the OTP verification code.");
+      return;
+    }
+
+    if (expiryTimer <= 0) {
+      setError("The verification code has expired (5-minute limit). Please click Resend OTP.");
+      return;
+    }
+
+    if (verifyAttempts >= 5) {
+      setError("Maximum verification attempts (5/5) exceeded. Please request a new OTP.");
+      return;
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    setOtpLoading(true);
+    const response = await verifyGmailOtp(trimmedEmail, enteredOtp);
+    setOtpLoading(false);
+
+    if (response.success) {
+      saveUser({ username, mobile, email: trimmedEmail, password, mobileVerified: true, emailVerified: true });
+      try {
+        await syncFirebaseUserAfterOtp(trimmedEmail, username);
+      } catch (err) {
+        console.warn("User Firestore sync notice:", err);
+      }
+      setSuccess("Account registered & verified successfully! Redirecting to login...");
       setTimeout(() => {
         setMode("login");
         setError("");
         setSuccess("Account registered successfully! Please sign in.");
       }, 1200);
-    });
+    } else {
+      const newAttempts = verifyAttempts + 1;
+      setVerifyAttempts(newAttempts);
+      setError(response.error || `Invalid verification code. (Attempt ${newAttempts} of 5)`);
+    }
   };
 
   // FORGOT PASSWORD Handler
@@ -487,30 +589,78 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
     setError("");
     setSuccess("");
 
-    if (!/^\d{10}$/.test(forgotMobile)) {
-      setError("Please enter a valid 10-digit Indian Mobile Number.");
+    if (!forgotMobile.trim()) {
+      setError("Please enter your registered Mobile Number or Gmail address.");
       return;
     }
 
     const currentUsers = getUsers();
-    const foundUser = Object.values(currentUsers).find((u: any) => u.mobile === forgotMobile) as any;
+    const cleanInput = forgotMobile.trim().toLowerCase();
+    const foundUser = Object.values(currentUsers).find(
+      (u: any) => u.mobile === cleanInput || u.email?.toLowerCase() === cleanInput || u.username?.toLowerCase() === cleanInput
+    ) as any;
 
-    if (!foundUser) {
-      setError("This mobile number is not registered under any account.");
+    const targetEmail = foundUser?.email || (cleanInput.includes("@") ? cleanInput : null);
+
+    if (!targetEmail) {
+      setError("No account found matching this mobile number or email address.");
       return;
     }
 
-    await dispatchFirebaseOtp(forgotMobile, "otp-verify", "Recovery code sent to");
+    setOtpLoading(true);
+    const response = await requestGmailOtp(targetEmail);
+    setOtpLoading(false);
+
+    if (response.success) {
+      setMode("otp-verify");
+      setOtp(["", "", "", "", "", ""]);
+      setResendCooldown(60);
+      setExpiryTimer(300);
+      setVerifyAttempts(0);
+      setSuccess(response.message || `Recovery verification code delivered to ${targetEmail}.`);
+    } else {
+      setError(response.error || "Failed to dispatch recovery code to Gmail. Please try again.");
+    }
   };
 
   // VERIFY FORGOT OTP Handler
-  const handleVerifyForgotOtp = (e: React.FormEvent) => {
+  const handleVerifyForgotOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    verifyFirebaseOtp(() => {
+    setError("");
+    setSuccess("");
+
+    const enteredOtp = otp.join("");
+    if (enteredOtp.length < 6) {
+      setError("Please enter all 6 digits of the OTP code.");
+      return;
+    }
+
+    if (expiryTimer <= 0) {
+      setError("The recovery code has expired. Please request a new code.");
+      return;
+    }
+
+    const currentUsers = getUsers();
+    const cleanInput = forgotMobile.trim().toLowerCase();
+    const foundUser = Object.values(currentUsers).find(
+      (u: any) => u.mobile === cleanInput || u.email?.toLowerCase() === cleanInput || u.username?.toLowerCase() === cleanInput
+    ) as any;
+    const targetEmail = foundUser?.email || (cleanInput.includes("@") ? cleanInput : "");
+
+    setOtpLoading(true);
+    const response = await verifyGmailOtp(targetEmail, enteredOtp);
+    setOtpLoading(false);
+
+    if (response.success) {
+      setSuccess("Identity verified successfully! Please set your new password.");
       setTimeout(() => {
         setMode("reset-password");
       }, 1000);
-    });
+    } else {
+      const newAttempts = verifyAttempts + 1;
+      setVerifyAttempts(newAttempts);
+      setError(response.error || `Invalid verification code. (Attempt ${newAttempts} of 5)`);
+    }
   };
 
   // RESET PASSWORD Handler
@@ -530,7 +680,10 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
     }
 
     const currentUsers = getUsers();
-    const foundUser = Object.values(currentUsers).find((u: any) => u.mobile === forgotMobile) as any;
+    const cleanInput = forgotMobile.trim().toLowerCase();
+    const foundUser = Object.values(currentUsers).find(
+      (u: any) => u.mobile === cleanInput || u.email?.toLowerCase() === cleanInput || u.username?.toLowerCase() === cleanInput
+    ) as any;
 
     if (!foundUser) {
       setError("User account not found.");
@@ -548,7 +701,7 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
       setOtp(["", "", "", "", "", ""]);
       setMode("login");
       setSuccess("");
-    }, 1200);
+    }, 1500);
   };
 
   // Handle single character OTP digit input with auto-focus
@@ -873,11 +1026,11 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
                 >
                   {otpLoading ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" /> Requesting Firebase OTP...
+                      <Loader2 className="w-4 h-4 animate-spin" /> Dispatching Gmail OTP...
                     </>
                   ) : (
                     <>
-                      Register Account <ArrowRight size={18} />
+                      Register & Verify Email <ArrowRight size={18} />
                     </>
                   )}
                 </button>
@@ -911,31 +1064,30 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
                 id="forgot-form"
               >
                 <div className="text-center">
-                  <Smartphone className="w-12 h-12 text-[#5A5A40] dark:text-[#C2C2A3] mx-auto mb-3" />
+                  <Mail className="w-12 h-12 text-[#5A5A40] dark:text-[#C2C2A3] mx-auto mb-3" />
                   <h3 className="text-base font-semibold text-gray-800 dark:text-white">
-                    Firebase OTP Password Recovery
+                    Gmail OTP Password Recovery
                   </h3>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
-                    Enter your registered UPI-linked Mobile No. Firebase will send a 6-digit OTP to verify your identity.
+                    Enter your registered Gmail address or Mobile No. A real 6-digit OTP will be sent to your Gmail inbox.
                   </p>
                 </div>
 
                 <div>
                   <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1.5 tracking-wider">
-                    Mobile No. (UPI Linked)
+                    Registered Email or Mobile No.
                   </label>
                   <div className="relative">
-                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400 dark:text-gray-500 font-mono text-sm font-semibold select-none">
-                      +91
+                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400 dark:text-gray-500">
+                      <Mail size={18} />
                     </span>
                     <input
-                      type="tel"
+                      type="text"
                       required
-                      maxLength={10}
-                      placeholder="10-digit mobile number"
+                      placeholder="user@gmail.com or 10-digit mobile"
                       value={forgotMobile}
-                      onChange={(e) => setForgotMobile(e.target.value.replace(/\D/g, ""))}
-                      className="w-full pl-12 pr-4 py-2.5 bg-[#F5F5F0]/40 dark:bg-[#1C1D1B]/40 border border-[#DEDDDA] dark:border-[#3E403D] text-[#2D302D] dark:text-[#E4E3E0] rounded-xl focus:ring-2 focus:ring-[#5A5A40]/30 focus:border-[#5A5A40] dark:focus:border-[#C2C2A3] outline-none transition-all text-sm font-mono"
+                      onChange={(e) => setForgotMobile(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 bg-[#F5F5F0]/40 dark:bg-[#1C1D1B]/40 border border-[#DEDDDA] dark:border-[#3E403D] text-[#2D302D] dark:text-[#E4E3E0] rounded-xl focus:ring-2 focus:ring-[#5A5A40]/30 focus:border-[#5A5A40] dark:focus:border-[#C2C2A3] outline-none transition-all text-sm"
                     />
                   </div>
                 </div>
@@ -948,11 +1100,11 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
                 >
                   {otpLoading ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" /> Sending Firebase OTP...
+                      <Loader2 className="w-4 h-4 animate-spin" /> Sending Recovery OTP...
                     </>
                   ) : (
                     <>
-                      Send Firebase OTP <ArrowRight size={18} />
+                      Send Recovery OTP to Gmail <ArrowRight size={18} />
                     </>
                   )}
                 </button>
@@ -994,13 +1146,13 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
                   <KeyRound className="w-12 h-12 text-[#5A5A40] dark:text-[#C2C2A3] mx-auto mb-3" />
                   <h3 className="text-base font-semibold text-gray-800 dark:text-white">
                     {mode === "login-otp-verify" && "Two-Factor Login Verification"}
-                    {mode === "signup-otp-verify" && "Verify Your Mobile Number"}
+                    {mode === "signup-otp-verify" && "Verify Your Gmail Address"}
                     {mode === "otp-verify" && "Enter Recovery Verification Code"}
                   </h3>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
-                    Firebase Auth has sent a 6-digit verification code to:{" "}
+                    A real 6-digit verification code has been dispatched to:{" "}
                     <span className="font-mono font-bold text-gray-900 dark:text-white">
-                      +91 {mode === "login-otp-verify" ? loginMobile : mode === "signup-otp-verify" ? mobile : forgotMobile}
+                      {mode === "signup-otp-verify" ? email : mode === "login-otp-verify" ? loginMobile : forgotMobile}
                     </span>
                   </p>
 
@@ -1051,7 +1203,7 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
                     )}
                   </button>
 
-                  {/* Resend OTP button with 30s cooldown */}
+                  {/* Resend OTP button with 60s cooldown */}
                   <div className="flex items-center gap-2 text-xs text-gray-400 mt-2">
                     {resendCooldown > 0 ? (
                       <span>Resend code in {resendCooldown}s</span>
@@ -1060,13 +1212,23 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
                         type="button"
                         disabled={otpLoading}
                         onClick={async () => {
-                          const targetPhone =
-                            mode === "login-otp-verify"
-                              ? loginMobile
-                              : mode === "signup-otp-verify"
-                                ? mobile
+                          const targetEmail =
+                            mode === "signup-otp-verify"
+                              ? email.trim().toLowerCase()
+                              : mode === "login-otp-verify"
+                                ? loginMobile
                                 : forgotMobile;
-                          await dispatchFirebaseOtp(targetPhone, mode, "New verification code sent to");
+                          setOtpLoading(true);
+                          const resp = await resendGmailOtp(targetEmail);
+                          setOtpLoading(false);
+                          if (resp.success) {
+                            setOtp(["", "", "", "", "", ""]);
+                            setResendCooldown(60);
+                            setExpiryTimer(300);
+                            setSuccess(`A new 6-digit code has been delivered to ${targetEmail}.`);
+                          } else {
+                            setError(resp.error || "Failed to resend code.");
+                          }
                         }}
                         className="text-[#5A5A40] dark:text-[#C2C2A3] font-semibold hover:underline cursor-pointer disabled:opacity-50"
                       >

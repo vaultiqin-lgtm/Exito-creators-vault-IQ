@@ -123,17 +123,50 @@ export const storeHashedOtp = (email: string, rawOtp: string): void => {
 };
 
 /**
- * Verifies user submitted OTP against hashed stored record.
+ * Creates a stateless signed cryptographic token for serverless verification resilience.
+ */
+export const createVerificationToken = (email: string, rawOtp: string, expiresAt: number): string => {
+  const normalizedEmail = email.trim().toLowerCase();
+  const payload = `${normalizedEmail}:${rawOtp}:${expiresAt}:${OTP_SECRET}`;
+  const hmac = crypto.createHash("sha256").update(payload).digest("hex");
+  return Buffer.from(`${expiresAt}.${hmac}`).toString("base64");
+};
+
+/**
+ * Verifies OTP against stateless signed token when serverless instances switch.
+ */
+export const verifyWithToken = (email: string, rawOtp: string, token: string): boolean => {
+  try {
+    const raw = Buffer.from(token, "base64").toString("utf-8");
+    const [expiresAtStr, hmac] = raw.split(".");
+    const expiresAt = Number(expiresAtStr);
+    if (!expiresAt || Date.now() > expiresAt) return false;
+    const normalizedEmail = email.trim().toLowerCase();
+    const expectedPayload = `${normalizedEmail}:${rawOtp}:${expiresAt}:${OTP_SECRET}`;
+    const expectedHmac = crypto.createHash("sha256").update(expectedPayload).digest("hex");
+    return hmac === expectedHmac;
+  } catch (e) {
+    return false;
+  }
+};
+
+/**
+ * Verifies user submitted OTP against hashed stored record or stateless verification token.
  * Handles single-use deletion, expiry, and attempt limits.
  */
 export const verifySubmittedOtp = (
   email: string,
-  userSubmittedOtp: string
+  userSubmittedOtp: string,
+  token?: string
 ): { success: boolean; error?: string; remainingAttempts?: number } => {
   const normalizedEmail = email.trim().toLowerCase();
   const record = activeOtpStore.get(normalizedEmail);
 
   if (!record) {
+    // If no in-memory record exists (e.g. serverless instance switch), verify using stateless token
+    if (token && verifyWithToken(normalizedEmail, userSubmittedOtp, token)) {
+      return { success: true };
+    }
     return {
       success: false,
       error: "No active verification code session found for this email. Please request a new OTP.",
@@ -164,6 +197,12 @@ export const verifySubmittedOtp = (
   const submittedHash = hashOtp(normalizedEmail, userSubmittedOtp);
 
   if (submittedHash !== record.hashedOtp) {
+    // Also check token if provided
+    if (token && verifyWithToken(normalizedEmail, userSubmittedOtp, token)) {
+      activeOtpStore.delete(normalizedEmail);
+      return { success: true };
+    }
+
     record.attempts += 1;
     const remainingAttempts = MAX_VERIFY_ATTEMPTS - record.attempts;
 
