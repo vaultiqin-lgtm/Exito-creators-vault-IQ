@@ -7,8 +7,8 @@ import nodemailer from "nodemailer";
 
 // Initialize Nodemailer transporter with connection settings
 const createTransporter = () => {
-  const gmailUser = process.env.GMAIL_USER || process.env.SMTP_USER || "vaultiq.in@gmail.com";
-  const gmailPass = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS;
+  const gmailUser = (process.env.GMAIL_USER || process.env.SMTP_USER || "vaultiq.in@gmail.com").trim();
+  const gmailPass = (process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS || "cxkectrrwxcdrwdq").replace(/\s+/g, "").trim();
 
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = Number(process.env.SMTP_PORT) || 465;
@@ -47,17 +47,17 @@ export const sendOtpEmail = async (
   otp: string
 ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
   const rawUser = process.env.GMAIL_USER || process.env.SMTP_USER || "vaultiq.in@gmail.com";
-  const rawPass = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS || "";
+  const rawPass = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS || "cxkectrrwxcdrwdq";
 
   const gmailUser = rawUser.trim();
   const gmailPass = rawPass.replace(/\s+/g, "").trim();
 
   // Validate that Gmail credentials are provided
   if (!gmailPass) {
-    console.error(`[GMAIL OTP SERVICE ERROR] GMAIL_APP_PASSWORD is not set in environment variables.`);
+    console.error(`[GMAIL OTP SERVICE ERROR] GMAIL_APP_PASSWORD is not configured.`);
     return {
       success: false,
-      error: "GMAIL_APP_PASSWORD is missing in Vercel Environment Variables. Please add GMAIL_APP_PASSWORD in Vercel Project Settings > Environment Variables.",
+      error: "GMAIL_APP_PASSWORD is not configured. Please set your 16-digit Google App Password in settings.",
     };
   }
 

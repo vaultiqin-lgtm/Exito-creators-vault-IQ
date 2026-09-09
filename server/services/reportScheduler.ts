@@ -46,8 +46,8 @@ const FINANCIAL_QUOTES = [
 
 // Initialize Nodemailer transporter with connection settings from env variables
 const createTransporter = () => {
-  const gmailUser = process.env.GMAIL_USER || process.env.SMTP_USER || "vaultiq.in@gmail.com";
-  const gmailPass = process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS;
+  const gmailUser = (process.env.GMAIL_USER || process.env.SMTP_USER || "vaultiq.in@gmail.com").trim();
+  const gmailPass = (process.env.GMAIL_APP_PASSWORD || process.env.SMTP_PASS || "cxkectrrwxcdrwdq").replace(/\s+/g, "").trim();
 
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = Number(process.env.SMTP_PORT) || 465;
