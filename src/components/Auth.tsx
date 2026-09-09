@@ -73,6 +73,24 @@ export const Auth: React.FC<AuthProps> = ({ onLoginSuccess, initialMode = "login
 
   const recaptchaVerifierRef = useRef<any>(null);
 
+  // Clean up reCAPTCHA verifier on unmount
+  useEffect(() => {
+    return () => {
+      if (recaptchaVerifierRef.current) {
+        try {
+          recaptchaVerifierRef.current.clear();
+        } catch (e) {}
+        recaptchaVerifierRef.current = null;
+      }
+      if (typeof window !== "undefined" && (window as any).recaptchaVerifier) {
+        try {
+          (window as any).recaptchaVerifier.clear();
+        } catch (e) {}
+        (window as any).recaptchaVerifier = null;
+      }
+    };
+  }, []);
+
   // 30-second Resend Cooldown Timer for Phone OTP
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | undefined;

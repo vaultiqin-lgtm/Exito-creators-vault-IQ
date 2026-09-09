@@ -216,11 +216,12 @@ export const syncFirebaseUserAfterOtp = async (
 /**
  * Initialize invisible reCAPTCHA verifier attached to a DOM container.
  * Invisible mode maintains the exact website UI without displaying a widget.
+ * Includes defensive node resetting to prevent "reCAPTCHA has already been rendered in this element".
  */
 export const initRecaptchaVerifier = (containerId: string): RecaptchaVerifier => {
   if (typeof window === "undefined") return null as any;
 
-  // Clear existing verifier if attached to window
+  // 1. If an existing verifier exists on window, clear it safely
   if ((window as any).recaptchaVerifier) {
     try {
       (window as any).recaptchaVerifier.clear();
@@ -230,24 +231,44 @@ export const initRecaptchaVerifier = (containerId: string): RecaptchaVerifier =>
     (window as any).recaptchaVerifier = null;
   }
 
-  // Clear container HTML element to prevent re-rendering issues
-  const containerEl = document.getElementById(containerId);
-  if (containerEl) {
+  // 2. Clean the DOM container element by replacing it with a brand new element node
+  // This detaches any internal widget ID or event listeners left by grecaptcha
+  let containerEl = document.getElementById(containerId);
+  if (containerEl && containerEl.parentNode) {
+    const freshContainer = document.createElement("div");
+    freshContainer.id = containerId;
+    containerEl.parentNode.replaceChild(freshContainer, containerEl);
+    containerEl = freshContainer;
+  } else if (containerEl) {
     containerEl.innerHTML = "";
   }
 
-  const verifier = new RecaptchaVerifier(auth, containerId, {
-    size: "invisible",
-    callback: () => {
-      console.log("[FIREBASE AUTH] reCAPTCHA verified successfully");
-    },
-    "expired-callback": () => {
-      console.warn("[FIREBASE AUTH] reCAPTCHA expired. User must retry.");
-    },
-  });
+  try {
+    const verifier = new RecaptchaVerifier(auth, containerId, {
+      size: "invisible",
+      callback: () => {
+        console.log("[FIREBASE AUTH] reCAPTCHA verified successfully");
+      },
+      "expired-callback": () => {
+        console.warn("[FIREBASE AUTH] reCAPTCHA expired. Resetting verifier.");
+        if ((window as any).recaptchaVerifier) {
+          try {
+            (window as any).recaptchaVerifier.clear();
+          } catch (e) {}
+          (window as any).recaptchaVerifier = null;
+        }
+      },
+    });
 
-  (window as any).recaptchaVerifier = verifier;
-  return verifier;
+    (window as any).recaptchaVerifier = verifier;
+    return verifier;
+  } catch (err: any) {
+    console.warn("[FIREBASE AUTH] Notice during RecaptchaVerifier creation:", err);
+    if ((window as any).recaptchaVerifier) {
+      return (window as any).recaptchaVerifier;
+    }
+    throw err;
+  }
 };
 
 /**
@@ -280,6 +301,16 @@ export const sendFirebasePhoneOtp = async (
     const errCode = error?.code || "";
     const errMsg = error?.message || "";
 
+    // Clear stale recaptcha on error so next attempt starts clean
+    if (errMsg.includes("already been rendered") || errCode === "auth/captcha-check-failed") {
+      try {
+        if ((window as any).recaptchaVerifier) {
+          (window as any).recaptchaVerifier.clear();
+          (window as any).recaptchaVerifier = null;
+        }
+      } catch (e) {}
+    }
+
     // Fallback simulation when Firebase domain/credentials are unconfigured, provider is un-enabled, or captcha fails
     if (
       errCode === "auth/invalid-app-credential" ||
@@ -287,9 +318,12 @@ export const sendFirebasePhoneOtp = async (
       errCode === "auth/api-key-not-valid" ||
       errCode === "auth/operation-not-allowed" ||
       errCode === "auth/unauthorized-domain" ||
+      errMsg.includes("already been rendered") ||
       errMsg.includes("app-credential") ||
       errMsg.includes("invalid-api-key") ||
-      errMsg.includes("operation-not-allowed")
+      errMsg.includes("operation-not-allowed") ||
+      errMsg.includes("reCAPTCHA") ||
+      errMsg.includes("recaptcha")
     ) {
       console.warn("[FIREBASE AUTH] Falling back to secure backend OTP engine for sandbox/demo environment.");
 
